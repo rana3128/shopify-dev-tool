@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shopify dev tool</title>
+<style>
+  :root {
+    --bg: #f4f4f2; --card: #fff; --ink: #1f1f1d; --muted: #6b6b66; --line: #e3e3de;
+    --ok: #12805c; --warn: #b7791f; --bad: #c0362c; --accent: #1f1f1d; --accent-ink: #fff; --log: #f7f7f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161615; --card: #1f1f1d; --ink: #ecece8; --muted: #9a9a93; --line: #33332f;
+      --ok: #3fbf8a; --warn: #e0a84a; --bad: #f0675c; --accent: #ecece8; --accent-ink: #161615; --log: #191918; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 28px 16px 60px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+  h1 { font-size: 20px; margin: 0; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  button { font: inherit; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--ink); padding: 6px 12px; cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); padding: 10px 18px; font-weight: 600; }
+  .proc { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }
+  .proc:first-of-type { border-top: 0; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--line); }
+  .dot.running { background: var(--ok); } .dot.starting { background: var(--warn); } .dot.failed { background: var(--bad); }
+  .proc b { display: block; } .proc code { display: block; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .proc .btns { display: flex; gap: 6px; }
+  pre.log { grid-column: 1 / -1; margin: 0; background: var(--log); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; max-height: 260px; overflow: auto; font: 12px/1.45 ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+  pre.log .err { color: var(--bad); } pre.log .sys { color: var(--muted); }
+  ol.steps { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 6px; }
+  ol.steps li { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 8px; }
+  ol.steps .d { color: var(--muted); font-size: 12px; word-break: break-all; }
+  .s-done::before { content: "✓"; color: var(--ok); } .s-failed::before { content: "✗"; color: var(--bad); }
+  .s-running::before { content: "…"; color: var(--warn); } .s-pending::before { content: "○"; color: var(--muted); }
+  .links { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  .links a { color: inherit; border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; text-decoration: none; }
+  .links a:hover { border-color: var(--muted); }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  input[type=password] { font: inherit; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--ink); min-width: 0; flex: 1 1 200px; }
+  .muted { color: var(--muted); font-size: 12px; }
+  #offline { display: none; color: var(--bad); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1 id="title">Shopify dev tool</h1>
+    <span id="offline">Tool stopped: restart it in Terminal</span>
+    <button id="stopAll">■ Stop all</button>
+  </header>
+
+  <section class="card">
+    <h2>Connect</h2>
+    <button class="primary" id="connect">⚡ Connect everything</button>
+    <ol class="steps" id="steps"></ol>
+    <div class="links" id="links"></div>
+  </section>
+
+  <section class="card">
+    <h2>Processes</h2>
+    <div id="procs"></div>
+  </section>
+
+  <section class="card">
+    <h2>Store password</h2>
+    <div class="row">
+      <input type="password" id="pw" placeholder="Only if the dev store asks for one" autocomplete="off">
+      <button id="pwSave">Use</button>
+    </div>
+    <p class="muted" id="pwNote">Kept in memory only and passed to processes as SHOPIFY_FLAG_STORE_PASSWORD.</p>
+  </section>
+</main>
+<script>
+const TOKEN = '__TOKEN__';
+const $ = (id) => document.getElementById(id);
+const open = new Set();      // processes whose logs are shown
+let current = null;
+
+const api = async (action, body = {}) => {
+  const res = await fetch(`/api/${action}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-token': TOKEN }, body: JSON.stringify(body) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) alert(data.error || res.statusText);
+  return data;
+};
+
+const el = (tag, props = {}, ...kids) => {
+  const n = Object.assign(document.createElement(tag), props);
+  n.append(...kids);
+  return n;
+};
+const line = (l) => el('span', { className: l.stream }, l.text + '\n');
+
+async function toggleLogs(name) {
+  if (open.has(name)) open.delete(name); else open.add(name);
+  render();
+  if (open.has(name)) {
+    const pre = document.querySelector(`pre[data-log="${name}"]`);
+    const logs = await api('logs', { name });
+    pre.replaceChildren(...logs.map(line));
+    pre.scrollTop = pre.scrollHeight;
+  }
+}
+
+function render() {
+  const s = current;
+  if (!s) return;
+  document.title = s.name;
+  $('title').textContent = s.name;
+  $('connect').disabled = s.connecting;
+  $('connect').textContent = s.connecting ? 'Connecting…' : '⚡ Connect everything';
+  $('steps').replaceChildren(...s.connect.map((st) => el('li', { className: `s-${st.state}` },
+    el('div', {}, st.label, st.detail ? el('div', { className: 'd' }, st.detail) : ''))));
+  $('links').replaceChildren(...Object.entries(s.links).map(([label, href]) =>
+    el('a', { href, target: '_blank', rel: 'noopener' }, `${label} ↗`)));
+  $('pwNote').textContent = s.hasPassword ? 'Password set (memory only). Restart the dev app to use it.' : 'Kept in memory only and passed to processes as SHOPIFY_FLAG_STORE_PASSWORD.';
+
+  const box = $('procs');
+  for (const p of s.processes) {
+    const st = s.status[p.name] || { status: 'stopped' };
+    let row = box.querySelector(`[data-proc="${p.name}"]`);
+    if (!row) {
+      row = el('div', { className: 'proc' });
+      row.dataset.proc = p.name;
+      box.append(row);
+    }
+    const running = st.status === 'running' || st.status === 'starting';
+    const pre = row.querySelector('pre');
+    row.replaceChildren(
+      el('span', { className: `dot ${st.status}`, title: st.status }),
+      el('div', {}, el('b', {}, `${p.label}${p.optional ? ' (optional)' : ''}`), el('code', { title: p.cmd }, `${st.status}${st.code != null && st.status === 'failed' ? ` (exit ${st.code})` : ''} · ${p.cmd}`)),
+      el('div', { className: 'btns' },
+        el('button', { textContent: running ? 'Stop' : '▶ Start', onclick: () => api(running ? 'stop' : 'start', { name: p.name }) }),
+        running ? el('button', { textContent: 'Restart', onclick: () => api('restart', { name: p.name }) }) : '',
+        el('button', { textContent: open.has(p.name) ? 'Hide logs' : 'Logs', onclick: () => toggleLogs(p.name) })),
+    );
+    if (open.has(p.name)) {
+      const log = pre || el('pre', { className: 'log' });
+      log.dataset.log = p.name;
+      row.append(log);
+    }
+  }
+}
+
+const es = new EventSource(`/events?token=${TOKEN}`);
+es.addEventListener('state', (e) => { current = JSON.parse(e.data); $('offline').style.display = 'none'; render(); });
+es.addEventListener('log', (e) => {
+  const l = JSON.parse(e.data);
+  const pre = document.querySelector(`pre[data-log="${l.name}"]`);
+  if (!pre) return;
+  const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 24;
+  pre.append(line(l));
+  while (pre.childNodes.length > 500) pre.firstChild.remove();
+  if (atBottom) pre.scrollTop = pre.scrollHeight;
+});
+es.onerror = () => { $('offline').style.display = 'inline'; };
+
+$('connect').onclick = () => api('connect');
+$('stopAll').onclick = () => api('stopAll');
+$('pwSave').onclick = () => { api('password', { value: $('pw').value }); $('pw').value = ''; };
+</script>
+</body>
+</html>
