@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 
 export const CONFIG_NAMES = ['shopify-dev-tool.config.json', 'dev/shopify-dev-tool.config.json', '.config/shopify-dev-tool.json'];
-const STEP_TYPES = ['start', 'restart', 'stop', 'replace', 'shopifyMetafield'];
+const STEP_TYPES = ['start', 'restart', 'stop', 'run', 'replace', 'shopifyMetafield'];
 
 export function findConfig(cwd, explicit) {
   if (explicit) return resolve(cwd, explicit);
@@ -41,6 +41,8 @@ export function validateConfig(raw) {
     if (['start', 'restart', 'stop'].includes(type) && !processes[step[type]]) {
       errors.push(`connect step ${i + 1}: unknown process "${step[type]}"`);
     }
+    if (type === 'run' && (typeof step.run !== 'string' || !step.run.trim())) errors.push(`connect step ${i + 1}: run needs a command`);
+    if (step.when != null && typeof step.when?.exists !== 'string') errors.push(`connect step ${i + 1}: when needs { "exists": "<path>" }`);
     if (type === 'replace') {
       const r = step.replace;
       if (!Array.isArray(r?.files) || !r.files.length || !r.pattern || r.with == null) {

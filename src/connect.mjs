@@ -1,9 +1,22 @@
 // "Connect everything": runs the config's connect steps in order and reports each one.
-import { readFileSync, writeFileSync } from 'node:fs';
+import { exec } from 'node:child_process';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { checkEditable, stepType, template } from './config.mjs';
 import { setShopMetafield } from './shopify.mjs';
 
 const DEFAULT_WAIT_MS = 120_000;
+
+// A one-off command (e.g. "turn local overrides on"). Resolves with its last output line.
+export function runCommand(cmd, cwd, timeoutMs) {
+  return new Promise((done, fail) => {
+    exec(cmd, { cwd, timeout: timeoutMs, shell: '/bin/sh', env: { ...process.env, FORCE_COLOR: '0' } }, (err, stdout, stderr) => {
+      const last = `${stdout}\n${stderr}`.trim().split('\n').filter(Boolean).pop() || '';
+      if (err) fail(new Error(last || err.message));
+      else done(last || 'done');
+    });
+  });
+}
 
 export function describeStep(step) {
   if (step.label) return step.label;
@@ -13,6 +26,7 @@ export function describeStep(step) {
     case 'start': return `Start ${v}${step.waitFor ? ` and get {${step.waitFor}}` : ''}`;
     case 'restart': return `Restart ${v}${step.waitFor ? ` and get {${step.waitFor}}` : ''}`;
     case 'stop': return `Stop ${v}`;
+    case 'run': return `Run ${v}`;
     case 'replace': return `Update ${v.files.join(', ')}`;
     case 'shopifyMetafield': return `Set metafield ${v.namespace}.${v.key}`;
     default: return type;
@@ -42,10 +56,16 @@ export async function runConnect(config, procs, report) {
     const type = stepType(step);
     const name = step[type];
     const wait = step.timeoutMs || DEFAULT_WAIT_MS;
+    if (step.when?.exists && !existsSync(resolve(config.root, step.when.exists))) {
+      Object.assign(steps[i], { state: 'skipped', detail: `skipped: ${step.when.exists} not found` });
+      send();
+      continue;
+    }
     steps[i].state = 'running';
     send();
     try {
       let detail = '';
+      if (type === 'run') detail = await runCommand(name, config.root, wait);
       if (type === 'start' || type === 'restart') {
         // `start` keeps a process that's already running, so its URL doesn't change.
         if (type === 'restart') await procs.restart(name);
@@ -68,9 +88,10 @@ export async function runConnect(config, procs, report) {
       Object.assign(steps[i], { state: 'done', detail: maskKey(detail || 'done') });
       send();
     } catch (e) {
-      Object.assign(steps[i], { state: 'failed', detail: e.message });
+      // An optional step that fails is reported, and the rest still run.
+      Object.assign(steps[i], { state: step.optional ? 'warn' : 'failed', detail: e.message });
       send();
-      return false;
+      if (!step.optional) return false;
     }
   }
   return true;

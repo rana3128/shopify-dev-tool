@@ -37,6 +37,8 @@
   ol.steps .d { color: var(--muted); font-size: 12px; word-break: break-all; }
   .s-done::before { content: "✓"; color: var(--ok); } .s-failed::before { content: "✗"; color: var(--bad); }
   .s-running::before { content: "…"; color: var(--warn); } .s-pending::before { content: "○"; color: var(--muted); }
+  .s-skipped::before { content: "–"; color: var(--muted); } .s-warn::before { content: "!"; color: var(--warn); font-weight: 700; }
+  .s-skipped > div, .s-warn .d { color: var(--muted); }
   .links { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
   .links a { color: inherit; border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; text-decoration: none; }
   .links a:hover { border-color: var(--muted); }

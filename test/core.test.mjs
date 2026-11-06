@@ -73,6 +73,28 @@ test('a process runs, captures a value, and stops with its children', async () =
   assert.equal(procs.state.p.status, 'stopped');
 });
 
+test('connect: skips steps whose file is missing, continues past optional failures, runs commands', async () => {
+  const { runConnect } = await import('../src/connect.mjs');
+  const config = validateConfig({
+    processes: { p: { cmd: 'sleep 30' } },
+    connect: [
+      { run: 'echo hello', label: 'run' },
+      { start: 'p', when: { exists: 'no-such-file' }, label: 'skip' },
+      { run: 'echo boom >&2; exit 2', optional: true, label: 'warn' },
+      { run: 'echo after', label: 'after' },
+    ],
+  });
+  config.root = process.cwd();
+  const procs = new Processes(config);
+  let last;
+  const ok = await runConnect(config, procs, (s) => { last = s; });
+  assert.equal(ok, true);
+  assert.deepEqual(last.map((s) => s.state), ['done', 'skipped', 'warn', 'done']);
+  assert.equal(last[0].detail, 'hello');
+  assert.equal(last[2].detail, 'boom');
+  assert.equal(procs.state.p.status, 'stopped');
+});
+
 test('waiting fails fast when the process exits', async () => {
   const config = validateConfig({ processes: { p: { cmd: 'exit 3', capture: { v: '(x)' } } } });
   config.root = process.cwd();

@@ -61,6 +61,9 @@ The tool looks for `shopify-dev-tool.config.json`, `dev/shopify-dev-tool.config.
 | `logFormat: "jsonl"` | Shows JSON log lines (`shopify app dev --json`) as `[source] message`. |
 | `connect` | Steps, in order. Each step can have a `label`. |
 | `start` / `restart` / `stop` | `start` keeps a process that's already running, so its tunnel URL stays the same. `waitFor` waits until a variable is captured. |
+| `run` | A one-off shell command, run from `root` (e.g. `"run": "scripts/setup.sh"`). It must exit 0. Its last output line is shown. |
+| `when: { "exists": "<path>" }` | Skip the step (shown as `–`) when that file or folder doesn't exist, e.g. a backend without its `.env`. |
+| `optional: true` | If the step fails, show `!` and carry on with the next steps instead of stopping. |
 | `replace` | Regex replace in files. `with` can use variables. |
 | `shopifyMetafield` | Sets a shop metafield through the GraphiQL link (`{graphiqlUrl}` by default). Sets `{store}`. |
 | `protect` | Files that `replace` must never edit. Defaults to `shopify.app.toml`, the live app's config. |
