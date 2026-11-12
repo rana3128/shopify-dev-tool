@@ -33,6 +33,15 @@ export function validateConfig(raw) {
     for (const [v, re] of Object.entries(p?.capture || {})) {
       try { new RegExp(re); } catch (e) { errors.push(`process "${name}" capture "${v}": ${e.message}`); }
     }
+    if (p?.attention != null) {
+      try { new RegExp(p.attention); } catch (e) { errors.push(`process "${name}" attention: ${e.message}`); }
+    }
+    const k = p?.killExisting;
+    if (k != null) {
+      if (k.ports != null && !(Array.isArray(k.ports) && k.ports.every(Number.isInteger))) errors.push(`process "${name}" killExisting.ports must be a list of numbers`);
+      if (k.match != null) { try { new RegExp(k.match); } catch (e) { errors.push(`process "${name}" killExisting.match: ${e.message}`); } }
+      if (!k.ports?.length && !k.match) errors.push(`process "${name}" killExisting needs ports or match`);
+    }
     if (p?.ready?.port != null && !Number.isInteger(p.ready.port)) errors.push(`process "${name}" ready.port must be a number`);
   }
   (raw.connect || []).forEach((step, i) => {

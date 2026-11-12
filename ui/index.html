@@ -34,7 +34,13 @@
   pre.log .err { color: var(--bad); } pre.log .sys { color: var(--muted); }
   ol.steps { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 6px; }
   ol.steps li { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 8px; }
-  ol.steps .d { color: var(--muted); font-size: 12px; word-break: break-all; }
+  ol.steps .d { color: var(--muted); font-size: 12px; word-break: break-all; white-space: pre-wrap; }
+  ol.steps .d a { color: inherit; }
+  ol.steps li.s-attention { background: color-mix(in srgb, var(--warn) 14%, transparent); border-radius: 8px; padding: 6px 8px 6px 0; }
+  ol.steps li.s-attention .d { color: var(--ink); }
+  .s-attention::before { content: "⚠"; color: var(--warn); text-align: center; }
+  .need { font-weight: 600; color: var(--warn); }
+  .proc .last { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .s-done::before { content: "✓"; color: var(--ok); } .s-failed::before { content: "✗"; color: var(--bad); }
   .s-running::before { content: "…"; color: var(--warn); } .s-pending::before { content: "○"; color: var(--muted); }
   .s-skipped::before { content: "–"; color: var(--muted); } .s-warn::before { content: "!"; color: var(--warn); font-weight: 700; }
@@ -96,6 +102,9 @@ const el = (tag, props = {}, ...kids) => {
   return n;
 };
 const line = (l) => el('span', { className: l.stream }, l.text + '\n');
+// Text with its https:// links clickable (a login link in a step's detail).
+const linkify = (text) => text.split(/(https?:\/\/\S+)/).map((part, i) =>
+  i % 2 ? el('a', { href: part, target: '_blank', rel: 'noopener' }, part) : part);
 
 async function toggleLogs(name) {
   if (open.has(name)) open.delete(name); else open.add(name);
@@ -116,7 +125,8 @@ function render() {
   $('connect').disabled = s.connecting;
   $('connect').textContent = s.connecting ? 'Connecting…' : '⚡ Connect everything';
   $('steps').replaceChildren(...s.connect.map((st) => el('li', { className: `s-${st.state}` },
-    el('div', {}, st.label, st.detail ? el('div', { className: 'd' }, st.detail) : ''))));
+    el('div', {}, st.label, st.state === 'attention' ? el('span', { className: 'need' }, ' · needs you') : '',
+      st.detail ? el('div', { className: 'd' }, ...linkify(st.detail)) : ''))));
   $('links').replaceChildren(...Object.entries(s.links).map(([label, href]) =>
     el('a', { href, target: '_blank', rel: 'noopener' }, `${label} ↗`)));
   $('pwNote').textContent = s.hasPassword ? 'Password set (memory only). Restart the dev app to use it.' : 'Kept in memory only and passed to processes as SHOPIFY_FLAG_STORE_PASSWORD.';
@@ -134,7 +144,8 @@ function render() {
     const pre = row.querySelector('pre');
     row.replaceChildren(
       el('span', { className: `dot ${st.status}`, title: st.status }),
-      el('div', {}, el('b', {}, `${p.label}${p.optional ? ' (optional)' : ''}`), el('code', { title: p.cmd }, `${st.status}${st.code != null && st.status === 'failed' ? ` (exit ${st.code})` : ''} · ${p.cmd}`)),
+      el('div', {}, el('b', {}, `${p.label}${p.optional ? ' (optional)' : ''}`), el('code', { title: p.cmd }, `${st.status}${st.code != null && st.status === 'failed' ? ` (exit ${st.code})` : ''} · ${p.cmd}`),
+        el('div', { className: 'last', title: s.last[p.name] || '' }, s.last[p.name] ? `› ${s.last[p.name]}` : '')),
       el('div', { className: 'btns' },
         el('button', { textContent: running ? 'Stop' : '▶ Start', onclick: () => api(running ? 'stop' : 'start', { name: p.name }) }),
         running ? el('button', { textContent: 'Restart', onclick: () => api('restart', { name: p.name }) }) : '',
@@ -152,6 +163,11 @@ const es = new EventSource(`/events?token=${TOKEN}`);
 es.addEventListener('state', (e) => { current = JSON.parse(e.data); $('offline').style.display = 'none'; render(); });
 es.addEventListener('log', (e) => {
   const l = JSON.parse(e.data);
+  if (l.stream !== 'sys' && current) {
+    current.last[l.name] = l.text;
+    const last = document.querySelector(`[data-proc="${l.name}"] .last`);
+    if (last) { last.textContent = `› ${l.text}`; last.title = l.text; }
+  }
   const pre = document.querySelector(`pre[data-log="${l.name}"]`);
   if (!pre) return;
   const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 24;

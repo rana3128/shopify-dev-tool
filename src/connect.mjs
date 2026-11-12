@@ -6,6 +6,9 @@ import { checkEditable, stepType, template } from './config.mjs';
 import { setShopMetafield } from './shopify.mjs';
 
 const DEFAULT_WAIT_MS = 120_000;
+const TICK_MS = 1000;
+// A line matching a process's `attention` pattern counts while it's among its newest lines.
+const ATTENTION_LINES = 3;
 
 // A one-off command (e.g. "turn local overrides on"). Resolves with its last output line.
 export function runCommand(cmd, cwd, timeoutMs) {
@@ -69,10 +72,18 @@ export async function runConnect(config, procs, report) {
       if (type === 'start' || type === 'restart') {
         // `start` keeps a process that's already running, so its URL doesn't change.
         if (type === 'restart') await procs.restart(name);
-        else if (!procs.isRunning(name)) procs.start(name);
+        else if (!procs.isRunning(name)) await procs.start(name);
         else detail = 'already running';
-        if (step.waitFor) detail = await procs.waitVar(name, step.waitFor, wait);
-        else await procs.waitRunning(name, wait);
+        const unwatch = watch(config, procs, name, steps[i], send);
+        try {
+          if (step.waitFor) detail = await procs.waitVar(name, step.waitFor, wait);
+          else await procs.waitRunning(name, wait);
+        } catch (e) {
+          const last = procs.lastLines(name, 1)[0];
+          throw new Error(last ? `${e.message}. Last output: ${last}` : e.message);
+        } finally {
+          unwatch();
+        }
       } else if (type === 'stop') {
         await procs.stop(name);
       } else if (type === 'replace') {
@@ -89,12 +100,34 @@ export async function runConnect(config, procs, report) {
       send();
     } catch (e) {
       // An optional step that fails is reported, and the rest still run.
-      Object.assign(steps[i], { state: step.optional ? 'warn' : 'failed', detail: e.message });
+      Object.assign(steps[i], { state: step.optional ? 'warn' : 'failed', detail: maskKey(e.message) });
       send();
       if (!step.optional) return false;
     }
   }
   return true;
+}
+
+// While a step waits on a process, its detail shows the process's newest output line and the time
+// waited, so a slow step never looks stuck. When the process prints a line matching its `attention`
+// pattern (e.g. a login link), the step turns "attention" and shows those lines instead.
+function watch(config, procs, name, step, send) {
+  const started = Date.now();
+  const pattern = config.processes[name].attention;
+  const re = pattern ? new RegExp(pattern, 'i') : null;
+  const tick = () => {
+    const recent = procs.lastLines(name, ATTENTION_LINES);
+    if (re && recent.some((l) => re.test(l))) {
+      Object.assign(step, { state: 'attention', detail: maskKey(recent.join('\n')) });
+    } else {
+      const secs = Math.round((Date.now() - started) / 1000);
+      Object.assign(step, { state: 'running', detail: maskKey(`${secs}s · ${recent.at(-1) || 'no output yet'}`) });
+    }
+    send();
+  };
+  const timer = setInterval(tick, TICK_MS);
+  tick();
+  return () => clearInterval(timer);
 }
 
 // Don't show the GraphiQL key in step details; the link button has the full URL.

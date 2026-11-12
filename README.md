@@ -22,7 +22,24 @@ npx shopify-dev-tool            # or: node path/to/shopify-dev-tool/bin/cli.mjs
 
 A page opens at `http://127.0.0.1:4590/`. Ctrl-C in the terminal stops every process it started.
 
-Options: `--config <file>`, `--port <n>`, `--no-open`.
+Options: `--config <file>`, `--port <n>`, `--no-open`, `--quiet`.
+
+The terminal shows what's happening, one timestamped line each:
+
+```
+05:40:12 connect    started
+05:40:13 tunnel     running
+05:40:15 vars       {tunnelUrl} = https://….trycloudflare.com
+05:40:16 app        │ [app dev] To run this command, log in to Shopify.
+05:40:16 connect    ⚠ Restart dev app and get the GraphiQL link: needs you
+                    User verification code: ABCD-EFGH
+                    Opened link to start the auth process: https://accounts.shopify.com/…
+```
+
+Every output line of every process is printed with its name (`│`), plus the tool's own lines (`»`: the command it ran,
+leftovers it stopped, exits). `--quiet` leaves out the `│` output lines.
+On the page, a step that's waiting shows how long it has waited and the process's newest line, and each
+process row shows its newest line.
 
 ## Config
 
@@ -37,6 +54,8 @@ The tool looks for `shopify-dev-tool.config.json`, `dev/shopify-dev-tool.config.
   "processes": {
     "web":    { "label": "Web", "cmd": "npm run dev", "cwd": "web", "ready": { "port": 8080 } },
     "app":    { "label": "Dev app", "cmd": "shopify app dev -c my-dev --json", "logFormat": "jsonl",
+                "attention": "log in to Shopify|verification code",
+                "killExisting": { "ports": [9293, 3457], "match": "shopify app dev -c my-dev" },
                 "capture": { "graphiqlUrl": "GraphiQL URL \\(Admin API\\): (\\S+)", "previewUrl": "Preview URL: (\\S+)" } },
     "tunnel": { "label": "Tunnel", "cmd": "cloudflared tunnel --no-autoupdate --url http://localhost:8080",
                 "capture": { "tunnelUrl": "(https://[a-z0-9-]+\\.trycloudflare\\.com)" } }
@@ -58,6 +77,8 @@ The tool looks for `shopify-dev-tool.config.json`, `dev/shopify-dev-tool.config.
 | `processes.<id>.cmd` | Shell command. `cwd` and `env` are optional. |
 | `ready.port` | The process counts as "running" once this port accepts connections. |
 | `capture` | `{ var: regex }`. The first group of a match on any output line becomes `{var}`. |
+| `killExisting` | `{ "ports": [9293], "match": "<regex>" }`. Before the process starts, stop leftovers from an earlier run (another terminal, a crashed tool) that listen on those ports or whose command line matches. Never the tool itself or a process it started. Each one is logged with its pid and command. |
+| `attention` | Regex. When one of the process's newest lines matches it (e.g. a login prompt), a step waiting on it shows **⚠ needs you** with those lines and their links. |
 | `logFormat: "jsonl"` | Shows JSON log lines (`shopify app dev --json`) as `[source] message`. |
 | `connect` | Steps, in order. Each step can have a `label`. |
 | `start` / `restart` / `stop` | `start` keeps a process that's already running, so its tunnel URL stays the same. `waitFor` waits until a variable is captured. |
@@ -75,11 +96,12 @@ The tool looks for `shopify-dev-tool.config.json`, `dev/shopify-dev-tool.config.
   that's embedded in the page, so other websites can't press the buttons.
 - `replace` only edits files inside `root` that aren't in `protect`.
 - The GraphiQL key and the store password stay in memory only. The tool writes neither to disk, and step details hide the key.
+- `killExisting` only stops processes that match what the config names, and logs each one.
 - Each process runs in its own process group. Stop, Stop all and Ctrl-C end its children too.
 
 ## Limits
 
-- macOS and Linux. Windows process-group stopping isn't supported yet.
+- macOS and Linux. Windows process-group stopping isn't supported yet. `killExisting` uses `ps` and `lsof`.
 - `cloudflared` quick tunnels give a new URL each time the tunnel restarts. Connect keeps a running tunnel,
   so Connect can be clicked again safely.
 

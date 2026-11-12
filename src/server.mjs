@@ -11,7 +11,11 @@ import { Processes } from './procs.mjs';
 const UI = join(dirname(fileURLToPath(import.meta.url)), '..', 'ui', 'index.html');
 const MAX_BODY = 10_000;
 
-export function createApp(config) {
+const STEP_MARK = { done: '✓', failed: '✗', running: '…', skipped: '–', warn: '!', attention: '⚠' };
+
+// `log(who, message)` gets what happens, for the terminal: process status, captured values, connect
+// steps and (unless `quiet`) every output line. Secrets are masked first.
+export function createApp(config, { log = () => {}, quiet = false } = {}) {
   const token = randomBytes(24).toString('hex');
   const secrets = {}; // typed in the page (store password); memory only
   const procs = new Processes(config, {
@@ -29,6 +33,7 @@ export function createApp(config) {
     name: config.name,
     processes: Object.entries(config.processes).map(([name, p]) => ({ name, label: p.label || name, hidden: !!p.hidden, optional: !!p.optional, cmd: p.cmd })),
     status: procs.snapshot(),
+    last: Object.fromEntries(Object.keys(config.processes).map((n) => [n, maskKey(procs.lastLines(n, 1)[0] || '')])),
     vars: publicVars(),
     links: links(),
     connect: connectSteps,
@@ -41,7 +46,33 @@ export function createApp(config) {
   };
   procs.on('status', () => broadcast('state', state()));
   procs.on('vars', () => broadcast('state', state()));
-  procs.on('log', (l) => broadcast('log', l));
+  procs.on('log', (l) => broadcast('log', { ...l, text: maskKey(l.text) }));
+
+  procs.on('status', ({ name, status, code }) => log(name, `${status}${code != null && status !== 'stopped' ? ` (exit ${code})` : ''}`));
+  let seenVars = {};
+  procs.on('vars', (vars) => {
+    for (const [k, v] of Object.entries(vars)) {
+      if (seenVars[k] !== v) log('vars', `{${k}} = ${maskKey(v)}`);
+    }
+    seenVars = { ...vars };
+  });
+  // Output lines get "│"; the tool's own lines ("$ cmd", "stopping leftover…", "exited") get "»" and always show.
+  procs.on('log', ({ name, stream, text }) => {
+    if (stream === 'sys') log(name, `» ${maskKey(text)}`);
+    else if (!quiet) log(name, `│ ${maskKey(text)}`);
+  });
+  // A connect step is logged when its state changes, or when what it needs from you changes.
+  let loggedSteps = [];
+  const logSteps = (steps) => {
+    steps.forEach((st, i) => {
+      const before = loggedSteps[i];
+      const changed = !before || before.state !== st.state || (st.state === 'attention' && before.detail !== st.detail);
+      if (!changed || st.state === 'pending') return;
+      const detail = st.state === 'running' ? '' : st.detail;
+      log('connect', `${STEP_MARK[st.state] || st.state} ${st.label}${st.state === 'attention' ? ': needs you' : ''}${detail ? `\n${detail}` : ''}`);
+    });
+    loggedSteps = steps;
+  };
 
   const actions = {
     start: ({ name }) => procs.start(need(name)),
@@ -53,7 +84,10 @@ export function createApp(config) {
     connect: () => {
       if (connecting) return;
       connecting = true;
-      runConnect(config, procs, (steps) => { connectSteps = steps; broadcast('state', state()); })
+      loggedSteps = [];
+      log('connect', 'started');
+      runConnect(config, procs, (steps) => { connectSteps = steps; logSteps(steps); broadcast('state', state()); })
+        .then((ok) => log('connect', ok ? 'finished' : 'stopped at a failed step'), (e) => log('connect', `error: ${e.message}`))
         .finally(() => { connecting = false; broadcast('state', state()); });
     },
   };

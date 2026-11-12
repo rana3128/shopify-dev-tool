@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// shopify-dev-tool [--config <file>] [--port <n>] [--no-open]
+// shopify-dev-tool [--config <file>] [--port <n>] [--no-open] [--quiet]
 import { spawn } from 'node:child_process';
 import { CONFIG_NAMES, findConfig, loadConfig } from '../src/config.mjs';
 import { createApp } from '../src/server.mjs';
@@ -10,7 +10,7 @@ const opt = (name) => {
   return i >= 0 ? args[i + 1] : undefined;
 };
 if (args.includes('--help') || args.includes('-h')) {
-  console.log(`usage: shopify-dev-tool [--config <file>] [--port <n>] [--no-open]\nlooks for: ${CONFIG_NAMES.join(', ')}`);
+  console.log(`usage: shopify-dev-tool [--config <file>] [--port <n>] [--no-open] [--quiet]\n  --quiet  terminal shows steps and status only, not every output line\nlooks for: ${CONFIG_NAMES.join(', ')}`);
   process.exit(0);
 }
 
@@ -28,7 +28,14 @@ try {
 }
 
 const port = Number(opt('--port') || config.port);
-const { server, procs } = createApp(config);
+// "12:01:02 app        message"; later lines of a multi-line message are indented under the first.
+const WHO_WIDTH = 10;
+const stamp = () => new Date().toTimeString().slice(0, 8);
+const log = (who, msg) => {
+  const pad = ' '.repeat(stamp().length + WHO_WIDTH + 2);
+  console.log(`${stamp()} ${who.padEnd(WHO_WIDTH)} ${String(msg).split('\n').join(`\n${pad}`)}`);
+};
+const { server, procs } = createApp(config, { log, quiet: args.includes('--quiet') });
 server.on('error', (e) => {
   console.error(e.code === 'EADDRINUSE' ? `Port ${port} is in use: is the tool already open? Or pass --port.` : e.message);
   process.exit(1);

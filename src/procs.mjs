@@ -1,5 +1,5 @@
 // Runs the configured processes: start/stop, status, logs, and values captured from their output.
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { connect } from 'node:net';
 import { resolve } from 'node:path';
@@ -7,6 +7,45 @@ import { resolve } from 'node:path';
 const MAX_LOG_LINES = 500;
 const STOP_GRACE_MS = 5000;
 const READY_POLL_MS = 500;
+const LEFTOVER_GRACE_MS = 3000;
+
+const run = (cmd, args) => new Promise((done, fail) => {
+  execFile(cmd, args, (err, stdout) => {
+    // lsof exits 1 when nothing matches: that's an empty answer, not a failure.
+    if (err && !(cmd === 'lsof' && err.code === 1)) fail(err); else done(stdout);
+  });
+});
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+// Processes this one would clash with, left over from an earlier run (another terminal, a crashed tool):
+// listening on one of `spec.ports`, or with a command line matching `spec.match`.
+// `ownGroups` are the process groups the tool started; those, and the tool itself, are never listed.
+export async function findLeftovers(spec, ownGroups = new Set()) {
+  const list = (await run('ps', ['-Ao', 'pid=,pgid=,command='])).split('\n').flatMap((l) => {
+    const m = l.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+    return m ? [{ pid: Number(m[1]), pgid: Number(m[2]), cmd: m[3] }] : [];
+  });
+  const byPid = new Map(list.map((p) => [p.pid, p]));
+  const found = new Map();
+  for (const port of spec.ports || []) {
+    for (const pid of (await run('lsof', ['-nP', '-t', `-iTCP:${port}`, '-sTCP:LISTEN'])).split(/\s+/).filter(Boolean).map(Number)) {
+      found.set(pid, { pid, cmd: byPid.get(pid)?.cmd || '?', why: `port ${port}` });
+    }
+  }
+  if (spec.match) {
+    const re = new RegExp(spec.match);
+    for (const p of list) if (re.test(p.cmd)) found.set(p.pid, { pid: p.pid, cmd: p.cmd, why: 'command matches' });
+  }
+  return [...found.values()].filter(({ pid }) => pid !== process.pid && pid !== process.ppid && !ownGroups.has(byPid.get(pid)?.pgid));
+}
+
+// SIGTERM, then SIGKILL for any still alive after the grace time.
+async function killPids(pids, graceMs = LEFTOVER_GRACE_MS) {
+  for (const pid of pids) { try { process.kill(pid, 'SIGTERM'); } catch { /* gone */ } }
+  const until = Date.now() + graceMs;
+  while (pids.some(alive) && Date.now() < until) await new Promise((r) => setTimeout(r, 100));
+  for (const pid of pids.filter(alive)) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+}
 
 // One output line → the text to show. `jsonl` lines (shopify app dev --json) become "[source] message".
 export function renderLine(line, format) {
@@ -65,18 +104,26 @@ export class Processes extends EventEmitter {
     this.emit('log', { name, stream, text });
   }
 
+  // The last `n` output lines of the current run (not the tool's own "$ cmd" / "exited" lines).
+  lastLines(name, n = 1) {
+    return this.state[name].logs.filter((l) => l.stream !== 'sys').slice(-n).map((l) => l.text);
+  }
+
   isRunning(name) {
     return ['starting', 'running'].includes(this.state[name].status);
   }
 
-  start(name) {
+  async start(name) {
     const p = this.config.processes[name];
     const s = this.state[name];
     if (this.isRunning(name)) return;
     for (const v of Object.keys(p.capture || {})) this.setVar(v, null); // a new run gives new values
     s.logs = [];
     s.code = null;
+    s.cancelled = false;
     this.#status(name, 'starting');
+    if (p.killExisting) await this.#killLeftovers(name, p.killExisting);
+    if (s.cancelled) { this.#status(name, 'stopped'); return; } // Stop was pressed meanwhile
     this.#log(name, `$ ${p.cmd}`, 'sys');
     const child = spawn(p.cmd, {
       cwd: resolve(this.config.root, p.cwd || '.'),
@@ -108,6 +155,17 @@ export class Processes extends EventEmitter {
     else this.#status(name, 'running');
   }
 
+  async #killLeftovers(name, spec) {
+    const own = new Set(Object.values(this.state).flatMap((st) => (st.child ? [st.child.pid] : [])));
+    try {
+      const found = await findLeftovers(spec, own);
+      for (const f of found) this.#log(name, `stopping leftover pid ${f.pid} (${f.why}): ${f.cmd}`, 'sys');
+      if (found.length) await killPids(found.map((f) => f.pid));
+    } catch (e) {
+      this.#log(name, `couldn't check for leftover processes: ${e.message}`, 'sys');
+    }
+  }
+
   async #waitPort(name, child, port) {
     while (this.state[name].child === child) {
       if (await portOpen(port)) {
@@ -129,7 +187,10 @@ export class Processes extends EventEmitter {
   stop(name) {
     const s = this.state[name];
     const child = s.child;
-    if (!child) return Promise.resolve();
+    if (!child) {
+      if (s.status === 'starting') s.cancelled = true; // still clearing leftovers
+      return Promise.resolve();
+    }
     s.stopping = true;
     return new Promise((done) => {
       child.once('exit', done);
@@ -141,7 +202,7 @@ export class Processes extends EventEmitter {
 
   async restart(name) {
     await this.stop(name);
-    this.start(name);
+    await this.start(name);
   }
 
   stopAll() {
